@@ -41,8 +41,8 @@ fn main() {
     // relative_eq!(b.axis().unwrap(), axis);
     // relative_eq!(b.angle(), angle);
     
-    let nx = 100;
-    let ny = 200;
+    let nx = 200;
+    let ny = 100;
     
     let lower_left_corner = Vector3::new(-2.0, -1.0, -1.0);
     let hor = Vector3::new(4.0, 0.0, 0.0);
@@ -53,7 +53,7 @@ fn main() {
         let u = (x as f32 / nx as f32);
         let v = (y as f32 / ny as f32);
         let r = Ray{ origin: Point3::origin(), direction: lower_left_corner + u*hor + v*vert };
-        image::Rgb(vec3_to_rgb8(r.direction))
+        image::Rgb( bg(r.direction) )
     });
     
     let ref mut fout = File::create("test.png").unwrap();
