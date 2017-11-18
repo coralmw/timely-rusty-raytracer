@@ -7,13 +7,13 @@ use na::{Vector3, Rotation3, Point3};
 use image::{GenericImage, ImageBuffer};
 use std::fs::File;
 
-type color = [u8; 3];
+type Color = [u8; 3];
 
-fn vec3_to_rgb8(v : Vector3<f32>) -> color {
+fn vec3_to_rgb8(v : Vector3<f32>) -> Color {
     [v[0] as u8, v[1] as u8, v[2] as u8]
 }
 
-fn bg(ray : Vector3<f32>) -> color {
+fn bg(ray : Vector3<f32>) -> Color {
     let unit_dir = ray.normalize();
     let t = 0.5*(unit_dir[1] + 1.0);
     let white = Vector3::new(1.0, 1.0, 1.0)*255.0;
@@ -24,6 +24,11 @@ fn bg(ray : Vector3<f32>) -> color {
 struct RaylorSwift {
     origin : Point3<f32>,
     direction : Vector3<f32>
+}
+
+// translate a point, it's still a point!
+fn point_at_param(r : RaylorSwift, t : f32) -> Point3<f32> {
+    r.origin + t*r.direction
 }
 
 type Ray = RaylorSwift;
@@ -45,10 +50,10 @@ fn main() {
 
     
     let img = ImageBuffer::from_fn(nx, ny, |x, y| {
-        let col = Vector3::new( (x as f32 / nx as f32),  
-                                (y as f32 / ny as f32), 
-                                 0.2) * 255.0;
-        image::Rgb(vec3_to_rgb8(col))
+        let u = (x as f32 / nx as f32);
+        let v = (y as f32 / ny as f32);
+        let r = Ray{ origin: Point3::origin(), direction: lower_left_corner + u*hor + v*vert };
+        image::Rgb(vec3_to_rgb8(r.direction))
     });
     
     let ref mut fout = File::create("test.png").unwrap();
