@@ -1,0 +1,11 @@
+[package]
+name = "timely-rays"
+version = "0.1.0"
+authors = ["Thomas Parks <thomasparks@outlook.com>"]
+
+[dependencies]
+timely="*"
+nalgebra = "0.13"
+approx="*"
+image = "*"
+
