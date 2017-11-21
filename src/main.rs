@@ -3,6 +3,7 @@ extern crate approx; // For the macro relative_eq!
 extern crate nalgebra as na;
 extern crate image;
 
+
 use na::{Vector3, Rotation3, Point3};
 use image::{GenericImage, ImageBuffer};
 use std::fs::File;
@@ -21,20 +22,15 @@ struct RaylorSwift {
 }
 
 // translate a point, it's still a point!
-fn point_at_param(r : RaylorSwift, t : f32) -> Point3<f32> {
+fn point_at_param(r : &RaylorSwift, t : f32) -> Point3<f32> {
     r.origin + t*r.direction
 }
 
-type Ray = RaylorSwift;
-
-fn hit_sphere(center : &Point3<f32>, radius : f32, r : &Ray) -> bool {
-    let oc = r.origin - center;
-    let a = na::norm(&r.direction);
-    let b = 2.0 * na::dot(&oc, &r.direction);
-    let c = na::norm(&oc) - radius*radius;
-    let discrim = b*b -4.0*a*c;
-    discrim > 0.0
+fn point_to_vec(pt : &Point3<f32>) -> Vector3<f32> {
+    Vector3::new( pt[0], pt[1],pt[2] )
 }
+
+type Ray = RaylorSwift;
 
 fn bg(ray : &Ray) -> Color {
     let unit_dir = ray.direction.normalize();
@@ -45,24 +41,62 @@ fn bg(ray : &Ray) -> Color {
 }
 
 
-fn get_pixel_color(ray : &Ray) -> Color {
-    let sphere_pt = Point3::new(0.0,0.0,1.0);
-    if hit_sphere(&sphere_pt, 0.5, &ray) {
-        red
-    } else {
-        bg(&ray)
+struct HitRecord {
+    t : f32,
+    p : Point3<f32>,
+    normal : Vector3<f32>
+}
+
+struct Sphere {
+    center : Point3<f32>,
+    radius : f32
+}
+
+trait Hit {
+    fn hit(&self, r : &Ray, t_min : f32, f_max : f32) -> Option<HitRecord>;
+}
+
+impl Hit for Sphere {
+    fn hit(&self, r : &Ray, t_min : f32, t_max : f32) -> Option<HitRecord> {
+        let oc = r.origin - self.center;
+        let a = na::norm(&r.direction).powi(2);
+        let b = 2.0 * na::dot(&oc, &r.direction);
+        let c = na::norm(&oc).powi(2) - self.radius*self.radius;
+        let discrim = b*b - 4.0*a*c; // factor 2*2 absorbed
+        if discrim > 0.0 {
+            let temp = (-b - (b*b -a*c).sqrt()) / a;
+            if temp < t_max && temp > t_min {
+                Some( HitRecord{ t:temp, 
+                                 p:point_at_param(&r, temp), 
+                                 normal:(point_to_vec(&point_at_param(&r, temp)) - point_to_vec(&self.center)) / self.radius
+                              })
+            } else {
+                let temp = (-b + (b*b -a*c).sqrt()) / a; // sign flip
+                Some( HitRecord{ t:temp, 
+                                 p:point_at_param(&r, temp), 
+                                 normal:(point_to_vec(&point_at_param(&r, temp)) - point_to_vec(&self.center)) / self.radius
+                              })
+            }
+        } else {
+            None
+        }
     }
 }
 
+fn get_pixel_color(ray : &Ray) -> Color {
+    let s = Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 };
+    let sphere_hit = s.hit(&ray, 0.0, 100.0);
+    match sphere_hit {
+        Some(hitrec) => {
+            let pt = point_to_vec(&point_at_param(ray, hitrec.t));
+            let N = (pt + Vector3::z()).normalize();
+            vec3_to_rgb8( (N+Vector3::from_element(1.0))*128.0 )
+        }
+        None => bg(&ray)
+    }
+}
 
-fn main() {
-    // let axis  = Vector3::x_axis();
-    // let angle = 1.57;
-    // let b     = Rotation3::from_axis_angle(&axis, angle);
-
-    // relative_eq!(b.axis().unwrap(), axis);
-    // relative_eq!(b.angle(), angle);
-    
+fn main() {    
     let nx = 200;
     let ny = 100;
     
@@ -72,15 +106,12 @@ fn main() {
 
     
     let img = ImageBuffer::from_fn(nx, ny, |x, y| {
-        let u = (x as f32 / nx as f32);
-        let v = (y as f32 / ny as f32);
+        let u = x as f32 / nx as f32;
+        let v = y as f32 / ny as f32;
         let r = Ray{ origin: Point3::origin(), direction: lower_left_corner + u*hor + v*vert };
         image::Rgb( get_pixel_color(&r) )
     });
     
     let ref mut fout = File::create("test.png").unwrap();
     image::ImageRgb8(img).save(fout, image::PNG).unwrap();
-
-
-
 }
