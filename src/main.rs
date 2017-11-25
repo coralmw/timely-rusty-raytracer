@@ -7,6 +7,7 @@ extern crate image;
 use na::{Vector3, Rotation3, Point3};
 use image::{GenericImage, ImageBuffer};
 use std::fs::File;
+use std::collections::LinkedList;
 
 type Color = [u8; 3];
 
@@ -56,6 +57,11 @@ trait Hit {
     fn hit(&self, r : &Ray, t_min : f32, f_max : f32) -> Option<HitRecord>;
 }
 
+enum Hittable {
+    Sphere(Sphere),
+}
+
+
 impl Hit for Sphere {
     fn hit(&self, r : &Ray, t_min : f32, t_max : f32) -> Option<HitRecord> {
         let oc = r.origin - self.center;
@@ -83,10 +89,32 @@ impl Hit for Sphere {
     }
 }
 
+
+fn hit_world(r : &Ray, t_min : f32, t_max : f32, world : &LinkedList::<Hittable>) -> Option<HitRecord> {
+    let mut closest_so_far = t_max;
+    let mut nearest = None;
+    for hittable in world {
+        match hittable {
+            &Hittable::Sphere(ref s) =>  match s.hit(&r, t_min, closest_so_far) {
+                                            Some(hitrec) => {closest_so_far = hitrec.t;
+                                                             nearest = Some(hitrec);
+                                                            }
+                                            None => {}
+                    }
+
+        }
+    }
+    nearest
+}
+
 fn get_pixel_color(ray : &Ray) -> Color {
-    let s = Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 };
-    let sphere_hit = s.hit(&ray, 0.0, 100.0);
-    match sphere_hit {
+    
+    let mut hittables = LinkedList::<Hittable>::new();
+    hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
+    hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,1.0,-2.5), radius:1.0 }) );
+
+    // let s = Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 };
+    match hit_world(&ray, 0.0, 100.0, &hittables) {
         Some(hitrec) => {
             let pt = point_to_vec(&point_at_param(ray, hitrec.t));
             let N = (pt + Vector3::z()).normalize();
