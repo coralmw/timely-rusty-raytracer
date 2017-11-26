@@ -2,12 +2,14 @@
 extern crate approx; // For the macro relative_eq!
 extern crate nalgebra as na;
 extern crate image;
-
+extern crate rand;
 
 use na::{Vector3, Rotation3, Point3};
 use image::{GenericImage, ImageBuffer};
 use std::fs::File;
 use std::collections::LinkedList;
+use std::iter;
+use rand::{random, Open01};
 
 type Color = [u8; 3];
 
@@ -65,10 +67,10 @@ enum Hittable {
 impl Hit for Sphere {
     fn hit(&self, r : &Ray, t_min : f32, t_max : f32) -> Option<HitRecord> {
         let oc = r.origin - self.center;
-        let a = na::norm(&r.direction).powi(2);
-        let b = 2.0 * na::dot(&oc, &r.direction);
-        let c = na::norm(&oc).powi(2) - self.radius*self.radius;
-        let discrim = b*b - 4.0*a*c; // factor 2*2 absorbed
+        let a = na::dot(&r.direction, &r.direction);
+        let b = na::dot(&oc, &r.direction);
+        let c = na::dot(&oc, &oc) - self.radius*self.radius;
+        let discrim = b*b - a*c; // factor 2*2 absorbed
         if discrim > 0.0 {
             let temp = (-b - (b*b -a*c).sqrt()) / a;
             if temp < t_max && temp > t_min {
@@ -78,10 +80,11 @@ impl Hit for Sphere {
                               })
             } else {
                 let temp = (-b + (b*b -a*c).sqrt()) / a; // sign flip
-                Some( HitRecord{ t:temp, 
-                                 p:point_at_param(&r, temp), 
-                                 normal:(point_to_vec(&point_at_param(&r, temp)) - point_to_vec(&self.center)) / self.radius
-                              })
+                // Some( HitRecord{ t:temp, 
+                //                  p:point_at_param(&r, temp), 
+                //                  normal:(point_to_vec(&point_at_param(&r, temp)) - point_to_vec(&self.center)) / self.radius
+                //               })
+                None
             }
         } else {
             None
@@ -111,10 +114,10 @@ fn get_pixel_color(ray : &Ray) -> Color {
     
     let mut hittables = LinkedList::<Hittable>::new();
     hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
-    hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,1.0,-2.5), radius:1.0 }) );
+    hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,100.5,-1.0), radius:100.0 }) );
 
     // let s = Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 };
-    match hit_world(&ray, 0.0, 100.0, &hittables) {
+    match hit_world(&ray, 0.0, 9.0, &hittables) {
         Some(hitrec) => {
             let pt = point_to_vec(&point_at_param(ray, hitrec.t));
             let N = (pt + Vector3::z()).normalize();
@@ -124,6 +127,18 @@ fn get_pixel_color(ray : &Ray) -> Color {
     }
 }
 
+fn shuffle((x, y) : (f32, f32)) -> (f32, f32) { 
+    let Open01(vx) = random::<Open01<f32>>(); 
+    let Open01(vy) = random::<Open01<f32>>(); 
+    ((x+vx), (y+vy)) 
+}
+
+fn blend(samples : Vec<Color>) -> Color {
+    let l = samples.len() as f32;
+    let summed = samples.into_iter().fold([0.0, 0.0, 0.0], |slist, c| {[slist[0]+(c[0] as f32), slist[1]+(c[1] as f32), slist[2]+(c[2] as f32)]});
+    [(summed[0]/l) as u8, (summed[1]/l) as u8, (summed[2]/l) as u8]
+}
+
 fn main() {    
     let nx = 200;
     let ny = 100;
@@ -131,13 +146,20 @@ fn main() {
     let lower_left_corner = Vector3::new(-2.0, -1.0, -1.0);
     let hor = Vector3::new(4.0, 0.0, 0.0);
     let vert = Vector3::new(0.0, 2.0, 0.0);
-
     
+
     let img = ImageBuffer::from_fn(nx, ny, |x, y| {
-        let u = x as f32 / nx as f32;
-        let v = y as f32 / ny as f32;
-        let r = Ray{ origin: Point3::origin(), direction: lower_left_corner + u*hor + v*vert };
-        image::Rgb( get_pixel_color(&r) )
+        let point = (x as f32, y as f32);
+        let points : Vec<(f32, f32)> = iter::repeat(point)
+                                            .take(50)
+                                            .into_iter()
+                                            .map(|pt| {shuffle(pt)}) // move the samples about for AA
+                                            .map(|(x, y)| {(x/nx as f32, y/ny as f32)}) // scale to screen space
+                                            .collect();
+        let samples : Vec<Color> = points.into_iter()
+                                         .map(|(u, v)| { get_pixel_color(&Ray{ origin: Point3::origin(), direction: lower_left_corner + u*hor + v*vert })})
+                                         .collect();
+        image::Rgb(blend(samples))
     });
     
     let ref mut fout = File::create("test.png").unwrap();
