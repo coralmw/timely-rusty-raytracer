@@ -8,4 +8,6 @@ timely="*"
 nalgebra = "0.13"
 approx="*"
 image = "*"
+rand = "0.3"
+itertools = "*"
 
