@@ -3,15 +3,39 @@ extern crate approx; // For the macro relative_eq!
 extern crate nalgebra as na;
 extern crate image;
 extern crate rand;
+extern crate timely;
+#[macro_use] extern crate itertools;
 
 use na::{Vector3, Rotation3, Point3};
 use image::{GenericImage, ImageBuffer};
 use std::fs::File;
 use std::collections::LinkedList;
+use std::ops::Range;
+use std::borrow::ToOwned;
+
 use std::iter;
+use std::iter::Enumerate;
+
 use rand::{random, Open01};
 
+use std::collections::HashMap;
+
+use timely::dataflow::{InputHandle, ProbeHandle};
+use timely::dataflow::operators::{Map, Operator, Accumulate, Inspect, Probe, Capture, ToStream};
+use timely::dataflow::channels::pact::Exchange;
+use timely::dataflow::operators::capture::Extract;
+
 type Color = [u8; 3];
+
+#[derive(Copy, Clone)]
+struct screenspec {
+    lower_left_corner : Vector3<f32>,
+    hor : Vector3<f32>,
+    vert : Vector3<f32>,
+    nx : u32,
+    ny : u32,
+
+}
 
 fn vec3_to_rgb8(v : Vector3<f32>) -> Color {
     [v[0] as u8, v[1] as u8, v[2] as u8]
@@ -139,29 +163,57 @@ fn blend(samples : Vec<Color>) -> Color {
     [(summed[0]/l) as u8, (summed[1]/l) as u8, (summed[2]/l) as u8]
 }
 
+fn get_screenspace_aa_pixel_color(point : (f32, f32), screen : &screenspec) -> Color {
+    let points : Vec<(f32, f32)> = iter::repeat(point)
+                                        .take(5)
+                                        .into_iter()
+                                        .map(|pt| {shuffle(pt)}) // move the samples about for AA
+                                        .map(|(x, y)| {(x/screen.nx as f32, y/screen.ny as f32)}) // scale to screen space
+                                        .collect();
+    let samples : Vec<Color> = points.into_iter()
+                                     .map(|(u, v)| { get_pixel_color(&Ray{ origin: Point3::origin(), direction: screen.lower_left_corner + u*screen.hor + v*screen.vert })})
+                                     .collect();
+    blend(samples)
+
+}
+
+
 fn main() {    
-    let nx = 200;
-    let ny = 100;
     
     let lower_left_corner = Vector3::new(-2.0, -1.0, -1.0);
     let hor = Vector3::new(4.0, 0.0, 0.0);
     let vert = Vector3::new(0.0, 2.0, 0.0);
     
-
-    let img = ImageBuffer::from_fn(nx, ny, |x, y| {
-        let point = (x as f32, y as f32);
-        let points : Vec<(f32, f32)> = iter::repeat(point)
-                                            .take(50)
-                                            .into_iter()
-                                            .map(|pt| {shuffle(pt)}) // move the samples about for AA
-                                            .map(|(x, y)| {(x/nx as f32, y/ny as f32)}) // scale to screen space
-                                            .collect();
-        let samples : Vec<Color> = points.into_iter()
-                                         .map(|(u, v)| { get_pixel_color(&Ray{ origin: Point3::origin(), direction: lower_left_corner + u*hor + v*vert })})
-                                         .collect();
-        image::Rgb(blend(samples))
+    let screen = screenspec{ lower_left_corner : Vector3::new(-2.0, -1.0, -1.0),
+                             hor : Vector3::new(4.0, 0.0, 0.0),
+                             vert : Vector3::new(0.0, 2.0, 0.0),
+                             nx : 200,
+                             ny : 100, };
+        
+    let captured = timely::example(move |scope| {
+        let pixlocs = iproduct!(0..screen.nx, 0..screen.ny);
+    
+        pixlocs.to_stream(scope)
+               .map(move |(x, y)| { 
+                  ((x, y), get_screenspace_aa_pixel_color((x as f32, y as f32), &screen)) 
+               })
+               .accumulate(vec![vec![[0u8, 0u8, 0u8]; screen.ny as usize]; screen.nx as usize], 
+                           |pixels, data| { 
+                               println!("accumulating!");
+                               for &((x, y), color) in data.iter() {pixels[x as usize][y as usize] = color;} 
+                           })
+               .capture()
+    });
+    
+    let extracted = captured.extract();
+    let (time, ref pixbufs) = extracted[0];
+        
+    let img = ImageBuffer::from_fn(screen.nx, screen.ny, |x, y| {
+        image::Rgb(pixbufs[0][x as usize][y as usize])
     });
     
     let ref mut fout = File::create("test.png").unwrap();
     image::ImageRgb8(img).save(fout, image::PNG).unwrap();
+
+
 }
