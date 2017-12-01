@@ -20,10 +20,9 @@ use rand::{random, Open01};
 
 use std::collections::HashMap;
 
+use timely::PartialOrder;
 use timely::dataflow::{InputHandle, ProbeHandle};
-use timely::dataflow::operators::{Map, Operator, Accumulate, Inspect, Probe, Capture, ToStream};
-use timely::dataflow::channels::pact::Exchange;
-use timely::dataflow::operators::capture::Extract;
+use timely::dataflow::operators::{Map, Operator, Accumulate, Inspect, Probe, Input};
 
 type Color = [u8; 3];
 
@@ -85,8 +84,10 @@ trait Hit {
 
 enum Hittable {
     Sphere(Sphere),
+    // Rect(Rect),
+    // Ngon(Ngon), // Hybrid modes!
+    // RichardSpencer() // is a Hittable
 }
-
 
 impl Hit for Sphere {
     fn hit(&self, r : &Ray, t_min : f32, t_max : f32) -> Option<HitRecord> {
@@ -120,8 +121,8 @@ impl Hit for Sphere {
 fn hit_world(r : &Ray, t_min : f32, t_max : f32, world : &LinkedList::<Hittable>) -> Option<HitRecord> {
     let mut closest_so_far = t_max;
     let mut nearest = None;
-    for hittable in world {
-        match hittable {
+    for Hittable in world {
+        match Hittable {
             &Hittable::Sphere(ref s) =>  match s.hit(&r, t_min, closest_so_far) {
                                             Some(hitrec) => {closest_so_far = hitrec.t;
                                                              nearest = Some(hitrec);
@@ -136,12 +137,12 @@ fn hit_world(r : &Ray, t_min : f32, t_max : f32, world : &LinkedList::<Hittable>
 
 fn get_pixel_color(ray : &Ray) -> Color {
     
-    let mut hittables = LinkedList::<Hittable>::new();
-    hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
-    hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,100.5,-1.0), radius:100.0 }) );
+    let mut Hittables = LinkedList::<Hittable>::new();
+    Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
+    Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,100.5,-1.0), radius:100.0 }) );
 
     // let s = Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 };
-    match hit_world(&ray, 0.0, 9.0, &hittables) {
+    match hit_world(&ray, 0.0, 9.0, &Hittables) {
         Some(hitrec) => {
             let pt = point_to_vec(&point_at_param(ray, hitrec.t));
             let N = (pt + Vector3::z()).normalize();
@@ -166,7 +167,6 @@ fn blend(samples : Vec<Color>) -> Color {
 fn get_screenspace_aa_pixel_color(point : (f32, f32), screen : &screenspec) -> Color {
     let points : Vec<(f32, f32)> = iter::repeat(point)
                                         .take(5)
-                                        .into_iter()
                                         .map(|pt| {shuffle(pt)}) // move the samples about for AA
                                         .map(|(x, y)| {(x/screen.nx as f32, y/screen.ny as f32)}) // scale to screen space
                                         .collect();
@@ -189,31 +189,42 @@ fn main() {
                              vert : Vector3::new(0.0, 2.0, 0.0),
                              nx : 200,
                              ny : 100, };
-        
-    let captured = timely::example(move |scope| {
+    
+    
+    timely::execute_from_args(std::env::args(), move |worker| {
+        let index = worker.index();
+        let mut input = InputHandle::new();
         let pixlocs = iproduct!(0..screen.nx, 0..screen.ny);
-    
-        pixlocs.to_stream(scope)
-               .map(move |(x, y)| { 
-                  ((x, y), get_screenspace_aa_pixel_color((x as f32, y as f32), &screen)) 
-               })
-               .accumulate(vec![vec![[0u8, 0u8, 0u8]; screen.ny as usize]; screen.nx as usize], 
-                           |pixels, data| { 
-                               println!("accumulating!");
-                               for &((x, y), color) in data.iter() {pixels[x as usize][y as usize] = color;} 
-                           })
-               .capture()
-    });
-    
-    let extracted = captured.extract();
-    let (time, ref pixbufs) = extracted[0];
         
-    let img = ImageBuffer::from_fn(screen.nx, screen.ny, |x, y| {
-        image::Rgb(pixbufs[0][x as usize][y as usize])
-    });
-    
-    let ref mut fout = File::create("test.png").unwrap();
-    image::ImageRgb8(img).save(fout, image::PNG).unwrap();
+        let probe = worker.dataflow(|scope| {
+        
+            scope.input_from(&mut input)
+                 .map(move |(x, y)| { 
+                    ((x, y), get_screenspace_aa_pixel_color((x as f32, y as f32), &screen)) 
+                 })
+                 .accumulate(vec![vec![[0u8, 0u8, 0u8]; screen.ny as usize]; screen.nx as usize], 
+                             |pixels, data| { 
+                                 println!("accumulating!");
+                                 for &((x, y), color) in data.iter() {pixels[x as usize][y as usize] = color;} 
+                             })
+                 .inspect(move |imgbuf| {
+                      let img = ImageBuffer::from_fn(screen.nx, screen.ny, |x, y| {
+                          image::Rgb(imgbuf[x as usize][y as usize])
+                      });
+                      
+                      let ref mut fout = File::create("test.png").unwrap();
+                      image::ImageRgb8(img).save(fout, image::PNG).unwrap();
+                 })
+                 .probe();
+        });
+        
+        for pixloc in pixlocs {
+            if worker.index() == 0 {
+                input.send(pixloc);
+            }
+        }
+        input.advance_to(1);
 
-
+    }).unwrap();
+        
 }
