@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate approx; // For the macro relative_eq!
 extern crate nalgebra as na;
 extern crate image;
@@ -6,23 +5,17 @@ extern crate rand;
 extern crate timely;
 #[macro_use] extern crate itertools;
 
-use na::{Vector3, Rotation3, Point3};
-use image::{GenericImage, ImageBuffer};
+use na::{Vector3, Point3};
+use image::{ImageBuffer};
 use std::fs::File;
 use std::collections::LinkedList;
-use std::ops::Range;
-use std::borrow::ToOwned;
 
 use std::iter;
-use std::iter::Enumerate;
 
 use rand::{random, Open01};
 
-use std::collections::HashMap;
-
-use timely::PartialOrder;
-use timely::dataflow::{InputHandle, ProbeHandle};
-use timely::dataflow::operators::{Map, Operator, Accumulate, Inspect, Probe, Input};
+use timely::dataflow::{InputHandle};
+use timely::dataflow::operators::{Map, Accumulate, Inspect, Probe, Input};
 
 type Color = [u8; 3];
 
@@ -40,7 +33,7 @@ fn vec3_to_rgb8(v : Vector3<f32>) -> Color {
     [v[0] as u8, v[1] as u8, v[2] as u8]
 }
 
-const red : Color = [255, 0, 0];
+const RED : Color = [255, 0, 0];
 
 struct RaylorSwift {
     origin : Point3<f32>,
@@ -104,11 +97,6 @@ impl Hit for Sphere {
                                  normal:(point_to_vec(&point_at_param(&r, temp)) - point_to_vec(&self.center)) / self.radius
                               })
             } else {
-                let temp = (-b + (b*b -a*c).sqrt()) / a; // sign flip
-                // Some( HitRecord{ t:temp, 
-                //                  p:point_at_param(&r, temp), 
-                //                  normal:(point_to_vec(&point_at_param(&r, temp)) - point_to_vec(&self.center)) / self.radius
-                //               })
                 None
             }
         } else {
@@ -118,11 +106,11 @@ impl Hit for Sphere {
 }
 
 
-fn hit_world(r : &Ray, t_min : f32, t_max : f32, world : &LinkedList::<Hittable>) -> Option<HitRecord> {
+fn hit_world(r : &Ray, t_min : f32, t_max : f32, world : &LinkedList<Hittable>) -> Option<HitRecord> {
     let mut closest_so_far = t_max;
     let mut nearest = None;
-    for Hittable in world {
-        match Hittable {
+    for hittable in world {
+        match hittable {
             &Hittable::Sphere(ref s) =>  match s.hit(&r, t_min, closest_so_far) {
                                             Some(hitrec) => {closest_so_far = hitrec.t;
                                                              nearest = Some(hitrec);
@@ -145,8 +133,8 @@ fn get_pixel_color(ray : &Ray) -> Color {
     match hit_world(&ray, 0.0, 9.0, &Hittables) {
         Some(hitrec) => {
             let pt = point_to_vec(&point_at_param(ray, hitrec.t));
-            let N = (pt + Vector3::z()).normalize();
-            vec3_to_rgb8( (N+Vector3::from_element(1.0))*128.0 )
+            let normal = (pt + Vector3::z()).normalize();
+            vec3_to_rgb8( (normal+Vector3::from_element(1.0))*128.0 )
         }
         None => bg(&ray)
     }
@@ -192,7 +180,6 @@ fn main() {
     
     
     timely::execute_from_args(std::env::args(), move |worker| {
-        let index = worker.index();
         let mut input = InputHandle::new();
         let pixlocs = iproduct!(0..screen.nx, 0..screen.ny);
         
