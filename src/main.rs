@@ -21,7 +21,8 @@ use std::iter;
 use rand::{random, Open01};
 
 use timely::dataflow::{InputHandle};
-use timely::dataflow::operators::{Map, Accumulate, Inspect, Probe, Input, LoopVariable, Concat, Partition, ConnectLoop};
+use timely::dataflow::operators::{Map, Accumulate, Inspect, Probe, Input, LoopVariable, Concat, Partition, ConnectLoop, Delay};
+use timely::progress::timestamp::RootTimestamp;
 
 type Color = [u8; 3];
 
@@ -209,6 +210,7 @@ fn main() {
                              ny : 100, };
                              
     let nsamples = 5;
+    let maxreflections = 10;
     
     
     timely::execute_from_args(std::env::args(), move |worker| {
@@ -218,7 +220,7 @@ fn main() {
         let probe = worker.dataflow(|scope| {
                         
             // create a loop that cycles at most std::u64::MAX times.
-            let (handle, cycle) = scope.loop_variable(std::u64::MAX, 1);
+            let (handle, cycle) = scope.loop_variable(maxreflections, 1);
         
             // everything needs to assume mabyecolor's so the partition works - cannot have diff. types for each partition
             let streams = 
@@ -245,6 +247,9 @@ fn main() {
                             _ => {panic!("we got a ray where color was expected!")}
                         }
                     })
+                    // accumulate will only acc. within a timestep. When a ray is reintroduced,
+                    // the timestamp is ++. So we delay all colors until the last possible timestamp.
+                    .delay_batch(move |time| RootTimestamp::new(maxreflections+1))
                     .accumulate(vec![vec![[0u8, 0u8, 0u8]; screen.ny as usize]; screen.nx as usize], 
                              move |pixels, colors| { 
                                  println!("accumulating!");
