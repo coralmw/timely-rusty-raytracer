@@ -5,18 +5,23 @@ extern crate rand;
 extern crate timely;
 #[macro_use] extern crate itertools;
 
+#[macro_use]
+extern crate abomonation;
+use abomonation::Abomonation;
+
 use na::{Vector3, Point3};
 use image::{ImageBuffer};
 use std::fs::File;
 use std::collections::LinkedList;
 use std::f32;
+use std::panic;
 
 use std::iter;
 
 use rand::{random, Open01};
 
 use timely::dataflow::{InputHandle};
-use timely::dataflow::operators::{Map, Accumulate, Inspect, Probe, Input};
+use timely::dataflow::operators::{Map, Accumulate, Inspect, Probe, Input, LoopVariable, Concat, Partition, ConnectLoop};
 
 type Color = [u8; 3];
 
@@ -48,10 +53,23 @@ fn random_unit() -> Vector3<f32> {
 
 const RED : Color = [255, 0, 0];
 
+#[derive(Copy, Clone)]
 struct RaylorSwift {
     origin : Point3<f32>,
     direction : Vector3<f32>
 }
+
+unsafe_abomonate!(RaylorSwift : origin, direction);
+
+type Ray = RaylorSwift;
+
+#[derive(Copy, Clone)]
+enum MabyeColor {
+    color(Color),
+    ray(Ray)
+}
+
+unsafe_abomonate!(MabyeColor);
 
 // translate a point, it's still a point!
 fn point_at_param(r : &RaylorSwift, t : f32) -> Point3<f32> {
@@ -61,8 +79,6 @@ fn point_at_param(r : &RaylorSwift, t : f32) -> Point3<f32> {
 fn point_to_vec(pt : &Point3<f32>) -> Vector3<f32> {
     Vector3::new( pt[0], pt[1],pt[2] )
 }
-
-type Ray = RaylorSwift;
 
 fn bg(ray : &Ray) -> Color {
     let unit_dir = ray.direction.normalize();
@@ -136,7 +152,8 @@ fn hit_world(r : &Ray, t_min : f32, t_max : f32, world : &LinkedList<Hittable>) 
     nearest
 }
 
-fn get_pixel_color(ray : &Ray) -> Color {
+
+fn get_pixel_color(ray : &Ray) -> MabyeColor {
     
     let mut Hittables = LinkedList::<Hittable>::new();
     Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
@@ -148,9 +165,12 @@ fn get_pixel_color(ray : &Ray) -> Color {
             let target = hitrec.p + hitrec.normal + random_unit();
             let pt = point_to_vec(&point_at_param(ray, hitrec.t));
             let normal = (pt + Vector3::z()).normalize();
-            get_pixel_color( &Ray{origin:hitrec.p, direction:target-hitrec.p} )
+            let reflection = Ray{origin:hitrec.p, direction:target-hitrec.p};
+            MabyeColor::ray(reflection)
+            //get_pixel_color( &reflection )
+            // MabyeColor::color(RED)
         }
-        None => bg(&ray)
+        None => MabyeColor::color(bg(&ray))
     }
 }
 
@@ -166,19 +186,15 @@ fn blend(samples : Vec<Color>) -> Color {
     [(summed[0]/l) as u8, (summed[1]/l) as u8, (summed[2]/l) as u8]
 }
 
-fn get_screenspace_aa_pixel_color(point : (f32, f32), screen : &screenspec) -> Color {
-    let points : Vec<(f32, f32)> = iter::repeat(point)
-                                        .take(50)
-                                        .map(|pt| {shuffle(pt)}) // move the samples about for AA
-                                        .map(|(x, y)| {(x/screen.nx as f32, y/screen.ny as f32)}) // scale to screen space
-                                        .collect();
-    let samples : Vec<Color> = points.into_iter()
-                                     .map(|(u, v)| { get_pixel_color(&Ray{ origin: Point3::origin(), direction: screen.lower_left_corner + u*screen.hor + v*screen.vert })})
-                                     .collect();
-    blend(samples)
-
+fn div_color(c : Color, div : u32) -> Color {
+    [((c[0] as f32)/(div as f32) + 0.5) as u8, 
+     ((c[1] as f32)/(div as f32) + 0.5) as u8, 
+     ((c[2] as f32)/(div as f32) + 0.5) as u8]
 }
 
+fn add_color(c1 : Color, c2 : Color) -> Color {
+    [c1[0]+c2[0], c1[1]+c2[1], c1[2]+c2[2]]
+}
 
 fn main() {    
     
@@ -191,6 +207,8 @@ fn main() {
                              vert : Vector3::new(0.0, 2.0, 0.0),
                              nx : 200,
                              ny : 100, };
+                             
+    let nsamples = 5;
     
     
     timely::execute_from_args(std::env::args(), move |worker| {
@@ -198,33 +216,72 @@ fn main() {
         let pixlocs = iproduct!(0..screen.nx, 0..screen.ny);
         
         let probe = worker.dataflow(|scope| {
+                        
+            // create a loop that cycles at most std::u64::MAX times.
+            let (handle, cycle) = scope.loop_variable(std::u64::MAX, 1);
         
-            scope.input_from(&mut input)
-                 .map(move |(x, y)| { 
-                    ((x, y), get_screenspace_aa_pixel_color((x as f32, y as f32), &screen)) 
-                 })
-                 .accumulate(vec![vec![[0u8, 0u8, 0u8]; screen.ny as usize]; screen.nx as usize], 
-                             |pixels, data| { 
+            // everything needs to assume mabyecolor's so the partition works - cannot have diff. types for each partition
+            let streams = 
+                 scope.input_from(&mut input)
+                     .concat(&cycle) // also introduce reflected rays
+                     .map(|(pixel, ray)| (pixel, get_pixel_color(&ray)))
+                     .partition(2, |(pixel, mabyecolor)| {
+                        match mabyecolor {
+                            MabyeColor::color(c) => {(1, (pixel, mabyecolor))}
+                            MabyeColor::ray(r)   => {(0, (pixel, mabyecolor))}
+                        }
+                     });
+                     
+            streams[0].map(|(pixel, ray)| {
+                        match ray { // this is for type-system reasons.
+                            MabyeColor::ray(r) => {(pixel, r)}
+                            _ => {panic!("we got a color where ray was expected!")}
+                        }
+                    }).connect_loop(handle); // loop anything that is not a color
+                 
+            streams[1].map(|(pixel, color)| {
+                        match color { // this is for type-system reasons.
+                            MabyeColor::color(c) => {(pixel, c)}
+                            _ => {panic!("we got a ray where color was expected!")}
+                        }
+                    })
+                    .accumulate(vec![vec![[0u8, 0u8, 0u8]; screen.ny as usize]; screen.nx as usize], 
+                             move |pixels, colors| { 
                                  println!("accumulating!");
-                                 for &((x, y), color) in data.iter() {pixels[x as usize][y as usize] = color;} 
-                             })
-                 .inspect(move |imgbuf| {
-                      let img = ImageBuffer::from_fn(screen.nx, screen.ny, |x, y| {
-                          image::Rgb(imgbuf[x as usize][y as usize])
-                      });
-                      
-                      let ref mut fout = File::create("test.png").unwrap();
-                      image::ImageRgb8(img).save(fout, image::PNG).unwrap();
-                 })
-                 .probe();
+                                 for &((x, y), color) in colors.iter() {
+                                    pixels[x as usize][y as usize] = add_color(div_color(color, nsamples), pixels[x as usize][y as usize]);
+                                 }
+                                })
+                     .inspect(move |imgbuf| {
+                          let img = ImageBuffer::from_fn(screen.nx, screen.ny, |x, y| {
+                              image::Rgb(imgbuf[x as usize][y as usize])
+                          });
+                          
+                          let ref mut fout = File::create("test.png").unwrap();
+                          image::ImageRgb8(img).save(fout, image::PNG).unwrap();
+                     })
+                     .probe();
         });
         
+        
+        // introduce rays not pixels. need a tuple (pixloc, ray) to identify what to
+        // cast and what subpixel direction to cast in.
         for pixloc in pixlocs {
-            if worker.index() == 0 {
-                input.send(pixloc);
+            let rays : Vec<Ray> = iter::repeat(pixloc)
+                                        .take(nsamples as usize)
+                                        .map(|(x, y)| {shuffle((x as f32, y as f32))}) // move the samples about for AA
+                                        .map(|(x, y)| {(x/screen.nx as f32, y/screen.ny as f32)}) // scale to screen space
+                                        .map(|(u, v)| Ray{ origin: Point3::origin(), 
+                                                           direction: screen.lower_left_corner + u*screen.hor + v*screen.vert
+                                                       }) // rays to cast  
+                                        .collect();
+            for ray in rays {
+                if worker.index() == 0 {
+                    input.send( (pixloc, ray) );
+                }
             }
         }
-        input.advance_to(1);
+        input.close();
 
     }).unwrap();
         
