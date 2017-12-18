@@ -9,6 +9,7 @@ use na::{Vector3, Point3};
 use image::{ImageBuffer};
 use std::fs::File;
 use std::collections::LinkedList;
+use std::f32;
 
 use std::iter;
 
@@ -31,6 +32,18 @@ struct screenspec {
 
 fn vec3_to_rgb8(v : Vector3<f32>) -> Color {
     [v[0] as u8, v[1] as u8, v[2] as u8]
+}
+
+fn random_unit() -> Vector3<f32> {
+    let mut v : Vector3<f32>;
+    while {
+        v = Vector3::new( random::<f32>(), 
+                          random::<f32>(), 
+                          random::<f32>() );
+        v = (v * 2.0) - Vector3::new(1.0, 1.0, 1.0);
+        na::dot(&v, &v) >= 1.0 // condition, passed back to while as test
+    } {} // do-nothing body, emulates do-while
+    v
 }
 
 const RED : Color = [255, 0, 0];
@@ -130,11 +143,12 @@ fn get_pixel_color(ray : &Ray) -> Color {
     Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,100.5,-1.0), radius:100.0 }) );
 
     // let s = Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 };
-    match hit_world(&ray, 0.0, 9.0, &Hittables) {
+    match hit_world(&ray, 0.0, f32::MAX, &Hittables) {
         Some(hitrec) => {
+            let target = hitrec.p + hitrec.normal + random_unit();
             let pt = point_to_vec(&point_at_param(ray, hitrec.t));
             let normal = (pt + Vector3::z()).normalize();
-            vec3_to_rgb8( (normal+Vector3::from_element(1.0))*128.0 )
+            get_pixel_color( &Ray{origin:hitrec.p, direction:target-hitrec.p} )
         }
         None => bg(&ray)
     }
@@ -154,7 +168,7 @@ fn blend(samples : Vec<Color>) -> Color {
 
 fn get_screenspace_aa_pixel_color(point : (f32, f32), screen : &screenspec) -> Color {
     let points : Vec<(f32, f32)> = iter::repeat(point)
-                                        .take(5)
+                                        .take(50)
                                         .map(|pt| {shuffle(pt)}) // move the samples about for AA
                                         .map(|(x, y)| {(x/screen.nx as f32, y/screen.ny as f32)}) // scale to screen space
                                         .collect();
