@@ -25,6 +25,7 @@ use timely::dataflow::operators::{Map, Accumulate, Inspect, Probe, Input, LoopVa
 use timely::progress::timestamp::RootTimestamp;
 
 type Color = [u8; 3];
+type Color32 = [u32; 3];
 
 #[derive(Copy, Clone)]
 struct screenspec {
@@ -187,14 +188,14 @@ fn blend(samples : Vec<Color>) -> Color {
     [(summed[0]/l) as u8, (summed[1]/l) as u8, (summed[2]/l) as u8]
 }
 
-fn div_color(c : Color, div : u32) -> Color {
+fn div_color(c : Color32, div : u32) -> Color {
     [((c[0] as f32)/(div as f32) + 0.5) as u8, 
      ((c[1] as f32)/(div as f32) + 0.5) as u8, 
      ((c[2] as f32)/(div as f32) + 0.5) as u8]
 }
 
-fn add_color(c1 : Color, c2 : Color) -> Color {
-    [c1[0]+c2[0], c1[1]+c2[1], c1[2]+c2[2]]
+fn accumulate_color(c1 : Color, c2 : Color32) -> Color32 {
+    [(c1[0] as u32)+c2[0], (c1[1] as u32)+c2[1], (c1[2] as u32)+c2[2]]
 }
 
 fn main() {    
@@ -209,8 +210,8 @@ fn main() {
                              nx : 200,
                              ny : 100, };
                              
-    let nsamples = 5;
-    let maxreflections = 10;
+    let nsamples = 50;
+    let maxreflections = 50;
     
     
     timely::execute_from_args(std::env::args(), move |worker| {
@@ -250,16 +251,16 @@ fn main() {
                     // accumulate will only acc. within a timestep. When a ray is reintroduced,
                     // the timestamp is ++. So we delay all colors until the last possible timestamp.
                     .delay_batch(move |time| RootTimestamp::new(maxreflections+1))
-                    .accumulate(vec![vec![[0u8, 0u8, 0u8]; screen.ny as usize]; screen.nx as usize], 
+                    .accumulate(vec![vec![[0u32, 0u32, 0u32]; screen.ny as usize]; screen.nx as usize], 
                              move |pixels, colors| { 
                                  println!("accumulating!");
                                  for &((x, y), color) in colors.iter() {
-                                    pixels[x as usize][y as usize] = add_color(div_color(color, nsamples), pixels[x as usize][y as usize]);
+                                    pixels[x as usize][y as usize] = accumulate_color(color, pixels[x as usize][y as usize]);
                                  }
                                 })
                      .inspect(move |imgbuf| {
                           let img = ImageBuffer::from_fn(screen.nx, screen.ny, |x, y| {
-                              image::Rgb(imgbuf[x as usize][y as usize])
+                              image::Rgb(div_color(imgbuf[x as usize][y as usize], nsamples))
                           });
                           
                           let ref mut fout = File::create("test.png").unwrap();
