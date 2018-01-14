@@ -24,6 +24,9 @@ use timely::dataflow::{InputHandle};
 use timely::dataflow::operators::{Map, Accumulate, Inspect, Probe, Input, LoopVariable, Concat, Partition, ConnectLoop, Delay};
 use timely::progress::timestamp::RootTimestamp;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
+
 type Color = [u8; 3];
 type Color32 = [u32; 3];
 
@@ -155,14 +158,9 @@ fn hit_world(r : &Ray, t_min : f32, t_max : f32, world : &LinkedList<Hittable>) 
 }
 
 
-fn get_pixel_color(ray : &Ray) -> MabyeColor {
-    
-    let mut Hittables = LinkedList::<Hittable>::new();
-    Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
-    Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,100.5,-1.0), radius:100.0 }) );
-
+fn get_pixel_color(ray : &Ray, world : &LinkedList<Hittable>) -> MabyeColor {
     // let s = Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 };
-    match hit_world(&ray, 0.0, f32::MAX, &Hittables) {
+    match hit_world(&ray, 0.0, f32::MAX, &world) {
         Some(hitrec) => {
             let target = hitrec.p + hitrec.normal + random_unit();
             let pt = point_to_vec(&point_at_param(ray, hitrec.t));
@@ -175,6 +173,26 @@ fn get_pixel_color(ray : &Ray) -> MabyeColor {
         None => MabyeColor::color(bg(&ray))
     }
 }
+
+
+fn get_pixel_color_recursive(ray : &Ray) -> Color {
+    let mut Hittables = LinkedList::<Hittable>::new();
+    Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
+    Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,100.5,-1.0), radius:100.0 }) );
+
+    // let s = Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 };
+    match hit_world(&ray, 0.0, f32::MAX, &Hittables) {
+        Some(hitrec) => {
+            let target = hitrec.p + hitrec.normal + random_unit();
+            let pt = point_to_vec(&point_at_param(ray, hitrec.t));
+            let normal = (pt + Vector3::z()).normalize();
+            let reflection = Ray{origin:hitrec.p, direction:target-hitrec.p};
+            get_pixel_color_recursive( &reflection )
+        }
+        None => bg(&ray)
+    }
+}
+
 
 fn shuffle((x, y) : (f32, f32)) -> (f32, f32) { 
     let Open01(vx) = random::<Open01<f32>>(); 
@@ -207,16 +225,44 @@ fn main() {
     let screen = screenspec{ lower_left_corner : Vector3::new(-2.0, -1.0, -1.0),
                              hor : Vector3::new(4.0, 0.0, 0.0),
                              vert : Vector3::new(0.0, 2.0, 0.0),
-                             nx : 200,
-                             ny : 100, };
-                             
+                             nx : 2000,
+                             ny : 1000, };
+    
     let nsamples = 50;
     let maxreflections = 50;
-    
-    
+    let start = SystemTime::now();
+
+/*  
+    // start of traditional mode
+    let pixlocs = iproduct!(0..screen.nx, 0..screen.ny);
+    let img = ImageBuffer::from_fn(screen.nx, screen.ny, |x, y| {
+        let rays : Vec<Ray> = iter::repeat((x, y))
+                                    .take(nsamples as usize)
+                                    .map(|(x, y)| {shuffle((x as f32, y as f32))}) // move the samples about for AA
+                                    .map(|(x, y)| {(x/screen.nx as f32, y/screen.ny as f32)}) // scale to screen space
+                                    .map(|(u, v)| Ray{ origin: Point3::origin(), 
+                                                       direction: screen.lower_left_corner + u*screen.hor + v*screen.vert
+                                                   }) // rays to cast  
+                                    .collect();
+                                    
+        let samples : Vec<Color> = rays.into_iter()
+                                         .map(|ray| { get_pixel_color_recursive(&ray) })
+                                         .collect();
+        image::Rgb(blend(samples))
+    });
+
+    let ref mut fout = File::create("test-mapreduce.png").unwrap();
+    image::ImageRgb8(img).save(fout, image::PNG).unwrap();
+    // end of traditional mode
+*/
+
     timely::execute_from_args(std::env::args(), move |worker| {
         let mut input = InputHandle::new();
         let pixlocs = iproduct!(0..screen.nx, 0..screen.ny);
+        
+        let mut Hittables = LinkedList::<Hittable>::new();
+        Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
+        Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,100.5,-1.0), radius:100.0 }) );
         
         let probe = worker.dataflow(|scope| {
                         
@@ -227,7 +273,7 @@ fn main() {
             let streams = 
                  scope.input_from(&mut input)
                      .concat(&cycle) // also introduce reflected rays
-                     .map(|(pixel, ray)| (pixel, get_pixel_color(&ray)))
+                     .map(move |(pixel, ray)| (pixel, get_pixel_color(&ray, &Hittables)))
                      .partition(2, |(pixel, mabyecolor)| {
                         match mabyecolor {
                             MabyeColor::color(c) => {(1, (pixel, mabyecolor))}
@@ -253,7 +299,6 @@ fn main() {
                     .delay_batch(move |time| RootTimestamp::new(maxreflections+1))
                     .accumulate(vec![vec![[0u32, 0u32, 0u32]; screen.ny as usize]; screen.nx as usize], 
                              move |pixels, colors| { 
-                                 println!("accumulating!");
                                  for &((x, y), color) in colors.iter() {
                                     pixels[x as usize][y as usize] = accumulate_color(color, pixels[x as usize][y as usize]);
                                  }
@@ -290,5 +335,6 @@ fn main() {
         input.close();
 
     }).unwrap();
-        
+    let elpased = SystemTime::now().duration_since(start);
+    println!("{:?}", elpased);
 }
