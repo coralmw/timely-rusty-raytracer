@@ -6,8 +6,11 @@ authors = ["Thomas Parks <thomasparks@outlook.com>"]
 [dependencies]
 timely="*"
 abomonation="*"
-nalgebra = "0.13"
 approx="*"
 image = "*"
 rand = "0.3"
 itertools = "*"
+
+[dependencies.nalgebra]
+version = "0.13"
+features = ["abomonation-serialize"]

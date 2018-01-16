@@ -262,6 +262,7 @@ fn main() {
         
         let mut Hittables = LinkedList::<Hittable>::new();
         Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,0.0,-1.0), radius:0.5 }) );
+        Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(0.0,1.0,-1.0), radius:0.5 }) );
         Hittables.push_back( Hittable::Sphere(Sphere { center:Point3::new(1.0,100.5,-1.0), radius:100.0 }) );
         
         let probe = worker.dataflow(|scope| {
